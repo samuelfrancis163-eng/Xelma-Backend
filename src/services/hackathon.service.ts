@@ -1,7 +1,4 @@
-import { db } from '../db/db';
-import { hackathonUsers, hackathonRounds } from '../db/schema';
-import { eq } from 'drizzle-orm';
-import { decAdd, decSub, toNumber, toDecimal } from '../utils/decimal.util';
+import { toNumber, toDecimal } from '../utils/decimal.util';
 import { prisma } from '../lib/prisma';
 import { Decimal } from '@prisma/client/runtime/library';
 import { BusinessRuleError, ErrorCode } from '../utils/errors';
@@ -209,9 +206,14 @@ export class HackathonService {
     side?: 'UP' | 'DOWN',
     predictedPrice?: number,
   ): Promise<void> {
-    const existing = await prisma.mockLeaderboard.findUnique({ where: { address } });
-    if (!existing) {
-      await prisma.mockLeaderboard.create({
+    const round = await prisma.mockRound.findUnique({ where: { id: roundId } });
+    if (!round) {
+      throw new Error('Round not found');
+    }
+
+    let user = await prisma.mockLeaderboard.findUnique({ where: { address } });
+    if (!user) {
+      user = await prisma.mockLeaderboard.create({
         data: {
           address,
           rank: 0,
@@ -226,6 +228,10 @@ export class HackathonService {
       });
     }
 
+    if (user.balance < amount) {
+      throw new Error('Insufficient balance');
+    }
+
     await prisma.mockBet.create({
       data: {
         roundId,
@@ -236,69 +242,32 @@ export class HackathonService {
       },
     });
 
-    const users = await db.select().from(hackathonUsers).where(eq(hackathonUsers.address, address));
-    if (users.length > 0) {
-      const remaining = decSub(users[0].balance, amount);
-      const newBalance = remaining.lt(0) ? 0 : toNumber(remaining);
-      await db.update(hackathonUsers).set({ balance: newBalance }).where(eq(hackathonUsers.address, address));
-    }
+    await prisma.mockLeaderboard.update({
+      where: { address },
+      data: { balance: { decrement: amount } },
+    });
 
-    const rounds = await db.select().from(hackathonRounds).where(eq(hackathonRounds.id, roundId));
-    if (rounds.length > 0) {
-      const round = rounds[0];
-      if (round.mode === 'updown' && side) {
-        if (side === 'UP') {
-          await db.update(hackathonRounds)
-            .set({ poolUp: toNumber(decAdd(round.poolUp, amount)) })
-            .where(eq(hackathonRounds.id, roundId));
-        } else {
-          await db.update(hackathonRounds)
-            .set({ poolDown: toNumber(decAdd(round.poolDown, amount)) })
-            .where(eq(hackathonRounds.id, roundId));
-        }
-      } else if (round.mode === 'precision') {
-        await db.update(hackathonRounds)
-          .set({
-            totalPool: toNumber(decAdd(round.totalPool, amount)),
-            predictionCount: round.predictionCount + 1,
-          })
-          .where(eq(hackathonRounds.id, roundId));
-      }
-    }
-
-    const user = await prisma.mockLeaderboard.findUnique({ where: { address } });
-    if (user) {
-      const newBalance = Math.max(0, user.balance - amount);
-      await prisma.mockLeaderboard.update({
-        where: { address },
-        data: { balance: newBalance },
-      });
-    }
-
-    const round = await prisma.mockRound.findUnique({ where: { id: roundId } });
-    if (round) {
-      if (round.mode === 'updown' && side) {
+    if (round.mode === 'updown' && side) {
         if (side === 'UP') {
           await prisma.mockRound.update({
             where: { id: roundId },
-            data: { poolUp: (round.poolUp ?? 0) + amount },
+            data: { poolUp: { increment: amount } },
           });
         } else {
           await prisma.mockRound.update({
             where: { id: roundId },
-            data: { poolDown: (round.poolDown ?? 0) + amount },
+            data: { poolDown: { increment: amount } },
           });
         }
       } else if (round.mode === 'precision') {
         await prisma.mockRound.update({
           where: { id: roundId },
           data: {
-            totalPool: (round.totalPool ?? 0) + amount,
-            predictionCount: (round.predictionCount ?? 0) + 1,
+            totalPool: { increment: amount },
+            predictionCount: { increment: 1 },
           },
         });
       }
-    }
   }
 }
 
