@@ -5,8 +5,8 @@ import { mockDataRepository } from '../repositories/mockData.repository';
  * ─────────────────────────────────────────────────────────────────────────────
  * Endpoint                          DATA_MODE=live            DATA_MODE=mock
  * ─────────────────────────────────────────────────────────────────────────────
- * GET /api/rounds                   Drizzle/Postgres          Drizzle/Postgres
- * GET /api/leaderboard              Drizzle/Postgres          mockLeaderboard (in-memory seed)
+ * GET /api/rounds                   Prisma/Postgres           Prisma/Postgres
+ * GET /api/leaderboard              Prisma/Postgres           mockLeaderboard (in-memory seed)
  * GET /api/stats                    Prisma/Postgres           MOCK_PLATFORM_STATS (in-memory)
  * GET /api/prices  (priceService)   CoinGecko (30s cache)     mockData.prices (in-memory)
  * GET /api/price   (oracle, prod)   XLM oracle providers      n/a on hackathon — use /api/prices
@@ -17,15 +17,18 @@ import { mockDataRepository } from '../repositories/mockData.repository';
  *   DATA_MODE=mock   → priceService returns mockData.prices; stats fall back to MOCK_PLATFORM_STATS
  *   DATA_MODE=live   → priceService fetches from CoinGecko; stats read from Postgres (default)
  *   DATA_STORE=memory → repositories use in-memory adapters instead of Postgres
- *   DATA_STORE=postgres → repositories use Drizzle/Prisma (default)
+ *   DATA_STORE=postgres → repositories use Prisma (default)
  *
  * See src/config/index.ts for the full list of config flags.
  */
 
 // Types are kept for backward compatibility with callers that map to the union shape.
+import { Decimal } from '@prisma/client/runtime/library';
+import { toDecimal } from '../utils/decimal.util';
+
 export type MockPredictionRound =
-  | { id: string; asset: string; mode: 'updown'; status: 'live' | 'new'; startPrice: number; poolUp: number; poolDown: number; closesAt: string; }
-  | { id: string; asset: string; mode: 'precision'; status: 'live' | 'new'; startPrice: number; totalPool: number; predictionCount: number; closesAt: string; };
+  | { id: string; asset: string; mode: 'updown'; status: 'live' | 'new'; startPrice: Decimal; poolUp: Decimal; poolDown: Decimal; closesAt: string; }
+  | { id: string; asset: string; mode: 'precision'; status: 'live' | 'new'; startPrice: Decimal; totalPool: Decimal; predictionCount: number; closesAt: string; };
 
 export type MockLeaderboardUser = {
   rank: number;
@@ -43,8 +46,7 @@ export type MockLeaderboardUser = {
  */
 
 /**
- * Fetches active rounds from the Drizzle/Postgres hackathon schema.
- * Source: hackathon_rounds table (seeded by src/db/seed.ts).
+ * Fetches active rounds from the Prisma-backed mock data repository.
  * Active in both DATA_MODE=mock and DATA_MODE=live.
  */
 export const getMockRounds = async (): Promise<MockPredictionRound[]> => {
@@ -53,18 +55,18 @@ export const getMockRounds = async (): Promise<MockPredictionRound[]> => {
     if (r.mode === 'updown') {
       return {
         id: r.id, asset: r.asset, mode: 'updown', status: r.status as 'live' | 'new',
-        startPrice: r.startPrice, poolUp: r.poolUp!, poolDown: r.poolDown!, closesAt: r.closesAt
+        startPrice: toDecimal(r.startPrice), poolUp: toDecimal(r.poolUp!), poolDown: toDecimal(r.poolDown!), closesAt: r.closesAt
       };
     }
     return {
       id: r.id, asset: r.asset, mode: 'precision', status: r.status as 'live' | 'new',
-      startPrice: r.startPrice, totalPool: r.totalPool!, predictionCount: r.predictionCount!, closesAt: r.closesAt
+      startPrice: toDecimal(r.startPrice), totalPool: toDecimal(r.totalPool!), predictionCount: r.predictionCount!, closesAt: r.closesAt
     };
   });
 };
 
 /**
- * Fetches leaderboard from the Drizzle/Postgres hackathon schema.
+ * Fetches leaderboard from the Prisma-backed mock data repository.
  * Falls back to the static mockLeaderboard seed when DATA_STORE=memory.
  */
 export const getMockLeaderboard = async (): Promise<MockLeaderboardUser[]> => {
@@ -73,7 +75,7 @@ export const getMockLeaderboard = async (): Promise<MockLeaderboardUser[]> => {
 
 /**
  * Aggregates prices, platform stats, and leaderboard for the stats endpoint.
- * Platform stats come from Drizzle/Postgres; falls back to hardcoded defaults
+ * Platform stats come from Prisma/Postgres; falls back to hardcoded defaults
  * when the DB is empty (not from the Soroban contract — on-chain stats are
  * handled separately by soroban.service.ts).
  */
